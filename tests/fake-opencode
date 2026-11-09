@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""Fake opencode CLI for opencode-worker tests.
+
+Emulates the subset of the OpenCode CLI the manager uses:
+  opencode run --format json --auto [...] -- PROMPT
+  opencode session list --format json --max-count N
+  opencode session export SESSION
+  opencode models
+
+Behavior is driven by the prompt text:
+  - default: reply with a deterministic message including the prompt
+  - contains FAIL: exit 1 with an error event
+  - contains HANG: sleep for a long time
+  - contains TOKENS: emit token usage
+  - writes to a session store under $FAKE_OPENCODE_HOME/sessions.json
+"""
+import json
+import os
+import sys
+import time
+import uuid
+
+HOME = os.environ.get("FAKE_OPENCODE_HOME") or "/tmp/fake-opencode-home"
+STORE = os.path.join(HOME, "sessions.json")
+
+
+def load_store():
+    try:
+        with open(STORE) as fh:
+            data = json.load(fh)
+            if isinstance(data, dict):
+                return data
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {}
+
+
+def save_store(data):
+    os.makedirs(HOME, exist_ok=True)
+    tmp = STORE + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(data, fh)
+    os.replace(tmp, STORE)
+
+
+def session_list():
+    data = load_store()
+    items = []
+    for sid, info in data.items():
+        items.append({
+            "id": sid,
+            "directory": info.get("directory"),
+            "updated": info.get("updated", 0),
+            "title": info.get("title"),
+        })
+    items.sort(key=lambda item: item.get("updated") or 0, reverse=True)
+    print(json.dumps(items))
+
+
+def session_export(sid):
+    data = load_store()
+    info = data.get(sid)
+    if not info:
+        sys.stderr.write(f"session {sid} not found\n")
+        return 1
+    print(json.dumps({
+        "id": sid,
+        "messages": [
+            {"role": "assistant", "parts": [{"type": "text", "text": info.get("last_text", "")}]},
+        ],
+    }))
+    return 0
+
+
+def emit(event):
+    sys.stdout.write(json.dumps(event, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+def run(argv):
+    prompt = ""
+    if "--" in argv:
+        prompt = argv[argv.index("--") + 1]
+    elif argv:
+        prompt = argv[-1]
+    session_id = None
+    title = None
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--session" and i + 1 < len(argv):
+            session_id = argv[i + 1]
+            i += 2
+            continue
+        if arg == "--title" and i + 1 < len(argv):
+            title = argv[i + 1]
+            i += 2
+            continue
+        i += 1
+
+    if "HANG" in prompt:
+        time.sleep(3600)
+        return 0
+
+    if "SLOW" in prompt:
+        time.sleep(2)
+
+    directory = os.getcwd()
+    new_session = not session_id
+    if new_session:
+        session_id = "ses_" + uuid.uuid4().hex[:24]
+
+    store = load_store()
+    record = store.get(session_id) or {"directory": directory, "title": title, "last_text": ""}
+
+    emit({"type": "session", "sessionID": session_id})
+    emit({"type": "text", "part": {"messageID": "msg_" + session_id[-8:], "id": "prt_1", "text": f"fake reply to: {prompt[:200]}"}})
+    emit({"type": "step_finish", "part": {"reason": "stop", "tokens": {"input": 10, "output": 5, "reasoning": 0, "cache": {"read": 0, "write": 0}}}})
+
+    if "PROVIDERLIMIT" in prompt:
+        emit({"type": "error", "error": {"message": "provider.free-limit: Free usage limit reached"}})
+        return 1
+
+    if "FAIL" in prompt:
+        emit({"type": "error", "error": {"message": "fake failure requested by prompt"}})
+        record["last_text"] = f"fake reply to: {prompt[:200]}"
+        record["updated"] = time.time()
+        store[session_id] = record
+        save_store(store)
+        return 1
+
+    record["last_text"] = f"fake reply to: {prompt[:200]}"
+    record["updated"] = time.time()
+    store[session_id] = record
+    save_store(store)
+    return 0
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv:
+        print("fake-opencode: missing command", file=sys.stderr)
+        return 2
+    cmd = argv[0]
+    if cmd in ("--version", "-v", "version"):
+        print("opencode v2.2.6-fake")
+        return 0
+    if cmd == "run":
+        return run(argv[1:])
+    if cmd == "session":
+        if len(argv) >= 2 and argv[1] == "list":
+            session_list()
+            return 0
+        if len(argv) >= 3 and argv[1] == "export":
+            return session_export(argv[2])
+    if cmd == "models":
+        print("opencode/deepseek-v4.1-flash-free")
+        return 0
+    print(f"fake-opencode: unknown command {cmd}", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
