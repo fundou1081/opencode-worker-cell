@@ -10,7 +10,7 @@ Coordinate several persistent OpenCode workers as a small mobile network: one **
 
 This is the **cell** skill. For a single standalone worker with no chatroom, no supervisor, and no coordination channels, use the **opencode-worker** skill instead.
 
-The manager is `scripts/opencode-worker` beside this `SKILL.md` (a wrapper around the shared manager in `~/.dsh/skills/opencode-worker-core/`, run with `--profile full`). Resolve the absolute path from the skill base directory (dsh exposes it as `<skill_resources>`; OpenCode passes it with the loaded skill) and repeat it in every bash call:
+The manager is `scripts/opencode-worker` beside this `SKILL.md` (run with `--profile full`). Resolve the absolute path from the skill base directory (dsh exposes it as `<skill_resources>`; OpenCode passes it with the loaded skill) and repeat it in every bash call:
 
 ```sh
 W=/absolute/path/to/opencode-worker-cell/scripts/opencode-worker
